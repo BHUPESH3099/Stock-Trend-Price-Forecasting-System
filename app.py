@@ -5,7 +5,8 @@ import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
 # Backend URL
-BACKEND_URL = "http://localhost:8000/stock"
+BACKEND_URL = "https://your-backend-service.onrender.com/stock"
+
 
 # --- Page Setup ---
 st.set_page_config(
@@ -247,3 +248,4 @@ if fetch_data:
         if chart:
             latest_df = df.sort_values(by="Date", ascending=False).head(10).reset_index(drop=True)
             st.dataframe(latest_df, hide_index=True)
+
