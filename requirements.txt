@@ -6,3 +6,7 @@ pandas
 python-dotenv
 pydantic
 plotly
+StandardScaler
+SMOTE
+pandas_ta
+XGBClassifier
