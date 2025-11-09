@@ -6,7 +6,8 @@ pandas
 python-dotenv
 pydantic
 plotly
-StandardScaler
-SMOTE
+imbalanced-learn
 pandas_ta
-XGBClassifier
+scikit-learn
+xgboost
+numpy
