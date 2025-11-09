@@ -176,7 +176,7 @@ if st.session_state['fetch_data_clicked']:
     
     try:
         with st.spinner(f"Running XGBoost and SARIMA analysis for {_ticker.upper()}..."):
-            resp = requests.get(BACKEND_URL, params=params, timeout=50)
+            resp = requests.get(BACKEND_URL, params=params, timeout=120)
             resp.raise_for_status()
             st.session_state['data'] = resp.json()
         
@@ -393,4 +393,5 @@ if st.session_state['data']:
         
 
        
+
 
