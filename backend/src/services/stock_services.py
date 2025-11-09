@@ -23,6 +23,8 @@ def fetch_historical_yfinance(symbol: str, start: str, end: str) -> pd.DataFrame
     start_date = datetime.strptime(start, "%Y-%m-%d")
     end_date = datetime.strptime(end, "%Y-%m-%d")
 
+  print(ticker)
+
     if (end_date - start_date).days < 365: 
         raise ValueError("Select a date range of at least 365 days") 
     
@@ -249,5 +251,6 @@ def get_stock(symbol: str, start: str = None, end: str = None) -> dict:
     except Exception as e:
         result["error"] = str(e)
         print(f"An error occurred: {e}")
+
 
     return result
