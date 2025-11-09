@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # Backend URL (Assumed to be running)
-BACKEND_URL = "http://localhost:8000/stock"
+BACKEND_URL = "https://stock-trend-price-forecasting-system.onrender.com/stock"
 
 # --- Streamlit Page Setup ---
 st.set_page_config(
@@ -391,4 +391,5 @@ if st.session_state['data']:
         
 
         
+
        
