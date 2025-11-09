@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.routes import stock_routes
-from src.middleware.custom_middleware import log_request
+from backend.src.routes import stock_routes
+from backend.src.middleware.custom_middleware import log_request
+
 
 app = FastAPI(title="Stock API")
 
@@ -17,3 +18,4 @@ app.middleware("http")(log_request)
 
 # Include the stock route
 app.include_router(stock_routes.router)
+
