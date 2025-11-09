@@ -11,3 +11,4 @@ pandas_ta
 scikit-learn
 xgboost
 numpy
+statsmodels
