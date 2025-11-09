@@ -28,19 +28,27 @@
 
 from fastapi import APIRouter, Query
 from ..services.stock_services import get_stock
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
 @router.get("/stock")
 def stock_endpoint(
     symbol: str = Query(..., description="Ticker e.g., INFY, TCS"),
-    days: int = Query(120, description="Days of historical data")
+    start: str = Query(
+        (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d"), 
+        description="Start date for historical data (YYYY-MM-DD)"
+    ),
+    end: str = Query(
+        datetime.now().strftime("%Y-%m-%d"), 
+        description="End date for historical data (YYYY-MM-DD)"
+    )
 ):
     """
     API endpoint to get live NSE + historical YFinance stock data.
     Even if one source fails, the other is returned.
     """
-    data = get_stock(symbol.strip().upper(), days)
+    data = get_stock(symbol.strip().upper(), start,end)
     # Optional: debug prints
     if "live" in data:
         print("LIVE DATA:", data["live"])

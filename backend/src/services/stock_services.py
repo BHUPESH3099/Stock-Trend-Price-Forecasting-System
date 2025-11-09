@@ -1,182 +1,253 @@
-import requests
-import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
-from ..config.settings import NSE_HOME, NSE_QUOTE_API, HEADERS
-import ssl
-import certifi
-import os
+import warnings
+from sklearn.preprocessing import StandardScaler
+from imblearn.over_sampling import SMOTE
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, classification_report
+import pandas_ta as ta
+import statsmodels.api as sm
+import ssl, certifi, os
+warnings.filterwarnings("ignore")
 
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 ssl._create_default_https_context = ssl.create_default_context(cafile=certifi.where())
 
 
-def fetch_live_from_nse(symbol: str):
-    session = requests.Session()
-    # Step 1: Get NSE homepage to retrieve cookies
-    try:
-        home = session.get("https://www.nseindia.com", headers=HEADERS, timeout=5, verify=certifi.where())
-        home.raise_for_status()
-    except requests.RequestException as e:
-        print("Failed to get NSE homepage:", e)
-        return {}
-
-    # Step 2: Use session (with cookies) to get quote data
-    url = NSE_QUOTE_API.format(symbol=symbol)
-    try:
-        response = session.get(url, headers=HEADERS, timeout=5, verify=False)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print("NSE fetch failed:", e)
-        return {}
-
-
-
-# def fetch_historical_yfinance(symbol: str, days: int = 120) -> pd.DataFrame:
-#     # """Fetch historical OHLCV from Yahoo Finance"""
-#     # ticker = symbol.upper() + ".NS" if not symbol.upper().endswith(".NS") else symbol
-#     # end = datetime.now()
-#     # start = end - timedelta(days=days + 10)
-#     # df = yf.download(ticker, start=start.strftime("%Y-%m-%d"),
-#     #                  end=end.strftime("%Y-%m-%d"), progress=False)
-#     # if df.empty:
-#     #     raise RuntimeError(f"No historical data for {ticker}")
-#     # df = df.reset_index()
-#     # return df
-
-def fetch_historical_yfinance(symbol: str, days: int = 120) -> pd.DataFrame:
-    """Fetch historical OHLCV from Yahoo Finance with clean columns"""
+def fetch_historical_yfinance(symbol: str, start: str, end: str) -> pd.DataFrame:
+  
     ticker = symbol.upper() + ".NS" if not symbol.upper().endswith(".NS") else symbol
-    end = datetime.now()
-    start = end - timedelta(days=days + 10)
+    start_date = datetime.strptime(start, "%Y-%m-%d")
+    end_date = datetime.strptime(end, "%Y-%m-%d")
 
-    df = yf.download(
-        ticker,
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        progress=False,
-    )
-
-    if df.empty:
-        raise RuntimeError(f"No historical data for {ticker}")
-
-    # Reset index so Date is a column
+    if (end_date - start_date).days < 365: 
+        raise ValueError("Select a date range of at least 365 days") 
+    
+    yf_end = end_date + timedelta(days=1) 
+    df = yf.download(ticker, start=start, end=yf_end, progress=False) 
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(level=1)
     df = df.reset_index()
-
-    # --- Flatten MultiIndex columns (if present) ---
-    expected_cols = ["Date", "Close", "High", "Low", "Open", "Volume"]
-    if df.columns.tolist() != expected_cols:
-        df.columns = expected_cols
-
-    # Ensure Date column is datetime
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"])
-    df['RSI'] = ta.rsi(df['Close'],length=14)
-    df['EMA50'] = ta.ema(df['Close'], length=50)
-    df['EMA200'] = ta.ema(df["Close"], length=200)
-    macd = ta.macd(df["Close"], fast=12, slow=26, signal=9)
-    df = pd.concat([df,macd], axis=1)
-    bbands = ta.bbands(df['Close'], length=20)
-    df = pd.concat([df, bbands], axis=1)
-    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-
-    df['VMA10'] = df['Volume'].rolling(10).mean()
-    df['VMA20'] = df['Volume'].rolling(20).mean()
-    df['Volume_Ratio'] = df['Volume'] / df['VMA20']
-    df['OBV'] = ta.obv(df['Close'], df['Volume'])
-    df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
-
-    df['Return'] = df['Close'].pct_change()
-
-    df['Lag1'] = df['Return'].shift(1)
-    df['Lag5'] = df['Return'].shift(5)
-    df['Lag10'] = df['Return'].shift(10)
-    df['Lag20'] = df['Return'].shift(20)
-
-    df['SMA5'] = df['Close'].rolling(5).mean()
-    df['SMA10'] = df['Close'].rolling(10).mean()
-    df['SMA20'] = df['Close'].rolling(20).mean()
-
-    df['Volatility10'] = df['Return'].rolling(10).std()
-    df['Volatility20'] = df['Return'].rolling(20).std()
-
-    df = df.dropna()
-    print(df)
-
+    if 'Adj Close' in df.columns:
+        df = df.drop(columns=['Adj Close'])
+    
     return df
 
 
-# def get_stock(symbol: str, days: int = 120) -> dict:
-    """Combine live + historical stock data"""
-    result = {"symbol": symbol}
-    # Live NSE
-    try:
-        js = fetch_live_from_nse(symbol)
-        price_info = js.get("priceInfo", {})
-        live = {
-            "open": price_info.get("open"),
-            "close": price_info.get("close"),
-            "lastPrice": price_info.get("lastPrice"),
-            "dayHigh": price_info.get("intraDayHighLow", {}).get("max"),
-            "dayLow": price_info.get("intraDayHighLow", {}).get("min"),
-            "52wHigh": price_info.get("weekHighLow", {}).get("max"),
-            "52wLow": price_info.get("weekHighLow", {}).get("min"),
-        }
-        vol = price_info.get("totalTradedVolume") or \
-              js.get("securityInfo", {}).get("tradedVolume")
-        live["volume"] = vol
-        result["live"] = live
-    except Exception as e:
-        result["live_error"] = str(e)
+def build_indicators(df):
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
 
-    # Historical YFinance
+    df.dropna(subset=['Close', 'Volume'], inplace=True)
+    df = df.reset_index(drop=True)
+
+   
+    df['RSI_D'] = ta.rsi(df['Close'], length=14)
+    macd = ta.macd(df['Close'])
+    if macd is not None:
+        df['MACD_D'] = macd.iloc[:, 0]
+        df['MACD_SIGNAL_D'] = macd.iloc[:, 1]
+    df['ADX'] = ta.adx(df['High'], df['Low'], df['Close'])['ADX_14']
+    stoch = ta.stoch(df['High'], df['Low'], df['Close'])
+    if stoch is not None:
+        df['STOCH_K'] = stoch['STOCHk_14_3_3']
+        df['STOCH_D'] = stoch['STOCHd_14_3_3']
+    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
+    df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
+    df['Return'] = df['Close'].pct_change()
+    df['Lag1'] = df['Return'].shift(1)
+    df['Lag3'] = df['Return'].shift(3)
+    df['Lag5'] = df['Return'].shift(5)
+    df['Volatility10'] = df['Return'].rolling(10).std()
+    df['Volatility05'] = df['Return'].rolling(5).std()
+    df['EMA5'] = df['Close'].ewm(span=5).mean()
+    df['EMA10'] = df['Close'].ewm(span=10).mean()
+
+  
+    df['Week'] = df['Date'].dt.to_period('W')
+    df['Month'] = df['Date'].dt.to_period('M')
+
+
+    
+    df_w = df.resample('W', on='Date').agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna() # Drop any incomplete weekly periods
+    macd_w = ta.macd(df_w['Close']) 
+    df_w['MACD_W'] = macd_w.iloc[:, 0]
+    df_w['MACD_SIGNAL_W'] = macd_w.iloc[:, 1]
+    df_w['RSI_W'] = ta.rsi(df_w['Close'], 14)
+    df_w['Week'] = df_w.index.to_period('W') # Use the index period for merging
+
+    
+    df_m = df.resample('M', on='Date').agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna() 
+    macd_m = ta.macd(df_m['Close'], fast=6, slow=13, signal=5) 
+    df_m['MACD_M'] = macd_m.iloc[:, 0]
+    df_m['MACD_SIGNAL_M'] = macd_m.iloc[:, 1]
+    df_m['RSI_M'] = ta.rsi(df_m['Close'], 14)
+    df_m['Month'] = df_m.index.to_period('M') 
+
+   
+    df = df.merge(df_w[['Week','RSI_W','MACD_W','MACD_SIGNAL_W']], on='Week', how='left')
+    df = df.merge(df_m[['Month','RSI_M','MACD_M','MACD_SIGNAL_M']], on='Month', how='left')
+
+    # ---------------- Drop helper columns & fill NaNs ----------------
+    df.drop(columns=['Week','Month'], inplace=True)
+    
+    df.fillna(method='bfill', inplace=True) 
+    df.fillna(method='ffill', inplace=True) 
+    df = df.reset_index(drop=True)
+
+    
+    return df
+
+def generate_xgboost_signal(df):
+    """
+    Generates a trading signal using an XGBoost classifier, 
+    adopting the signal and model training/evaluation logic 
+    from the second code snippet.
+    """
+    
+    df['Future_Max'] = df['Close'].shift(-3).rolling(3).max()
+    df['Future_Min'] = df['Close'].shift(-3).rolling(3).min()
+    future_return = (df['Future_Max'] - df['Close']) / df['Close']
+    future_loss = (df['Future_Min'] - df['Close']) / df['Close']
+    # Signal: 1 (Buy) if a 2% gain is possible, -1 (Sell) if a 2% loss is possible, 0 (Hold) otherwise
+    df['Signal'] = np.where(future_return > 0.02, 1, np.where(future_loss < -0.02, -1, 0))
+    
+   
+    features = [
+        'RSI_D','MACD_D','MACD_SIGNAL_D','STOCH_K','STOCH_D','ADX',
+        'MFI','ATR','Volatility05','Volatility10','EMA5','EMA10','Lag1','Lag3','Lag5',
+        'RSI_W','MACD_W','MACD_SIGNAL_W','RSI_M','MACD_M','MACD_SIGNAL_M'
+    ]
+
+   
+    weekly_monthly = ['RSI_W','MACD_W','MACD_SIGNAL_W','RSI_M','MACD_M','MACD_SIGNAL_M']
+    df[weekly_monthly] = df[weekly_monthly].fillna(method='bfill').fillna(method='ffill')
+
+    
+    df[features] = df[features].apply(pd.to_numeric, errors='coerce')
+
+   
+    df = df.dropna(subset=features + ['Signal']).reset_index(drop=True)
+    
+
+   
+    X = df[features].to_numpy()
+    y = df['Signal'].to_numpy()
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_res, y_res = SMOTE().fit_resample(X_scaled, y)
+
+    split = int(len(X_res)*0.8)
+    X_train, X_test = X_res[:split], X_res[split:]
+    y_train, y_test = y_res[:split], y_res[split:]
+
+    
+    model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+    # Shift labels to non-negative for XGBoost: -1->0, 0->1, 1->2
+    y_train_xgb = y_train + 1
+    y_test_xgb = y_test + 1
+
+    model.fit(X_train, y_train_xgb)
+    
+
+    pred = model.predict(X_test) - 1
+    
+   
+    latest_features = X_scaled[-1].reshape(1, -1)
+    latest_pred = model.predict(latest_features)[0] - 1
+    
+    acc = accuracy_score(y_test, pred)
+    signal_map = {1: "BUY 📈", 0: "HOLD 🤝", -1: "SELL 📉"}
+    signal = signal_map.get(latest_pred, "UNKNOWN")
+    
+    return signal
+
+
+def predict_with_sarima(df):
+    
+    results = {}
+    latest_close = df['Close'].iloc[-1]
+    for horizon in [3, 5]:
+        sarima_model = sm.tsa.statespace.SARIMAX(
+            df['Close'],
+            order=(2,1,2),
+            seasonal_order=(1,1,1,12),
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+        sarima_result = sarima_model.fit(disp=False)
+        forecast = sarima_result.forecast(steps=horizon)
+        predicted_price = forecast.iloc[-1]
+        
+        
+        pred_return = ((predicted_price - latest_close) / latest_close) * 100
+        error_pct = abs(predicted_price - latest_close) / latest_close * 100 
+        results[f"{horizon}_Day"] = {
+            "Predicted_Price": round(predicted_price, 2),
+            "Latest_Close": round(latest_close, 2),
+            "Predicted_Return_%": round(pred_return, 2),
+            # Renaming to 'Predicted_Deviation_%' for clarity on current data
+            "Predicted_Deviation_%": round(error_pct, 2), 
+            "AIC": round(sarima_result.aic, 2),
+            "BIC": round(sarima_result.bic, 2)
+        }
+   
+    return results
+
+
+def get_stock(symbol: str, start: str = None, end: str = None) -> dict:
+    """
+    Main function to fetch stock data, build indicators, run XGBoost signal,
+    and get SARIMA predictions.
+    """
+    result = {"symbol": symbol}
     try:
-        hist = fetch_historical_yfinance(symbol, days)
+        
+        hist = fetch_historical_yfinance(symbol, start, end)
+        
+      
+        hist = build_indicators(hist)
+        
+        
+        xgb_result = generate_xgboost_signal(hist.copy()) 
+        
+       
+        sarima_result = predict_with_sarima(hist.copy())
+
+       
         hist["Date"] = pd.to_datetime(hist["Date"])
-        chart = hist.tail(days).to_dict(orient="records")
+        
+        
+        chart_columns = [
+            'Date', 'Open', 'High', 'Low', 'Close', 'Volume', 
+            'RSI_D', 'MACD_D', 'MACD_SIGNAL_D', 'ATR', 'EMA5', 'EMA10'
+        ]
+        
+        
+        chart_data = hist[chart_columns]
+        
+        
+        chart = chart_data.to_dict(orient="records") 
+        
         for r in chart:
             r["Date"] = r["Date"].isoformat()
+
+        
         result["chart"] = chart
+        result["XGBoost_Signal"] = xgb_result
+        result["SARIMA_Predictions"] = sarima_result
+        
+        
     except Exception as e:
-        result["chart_error"] = str(e)
-    print('RESULT',result)
-    return result
+        result["error"] = str(e)
+        print(f"An error occurred: {e}")
 
-def get_stock(symbol: str, days: int = 120) -> dict:
-    """Fetch live NSE + historical YFinance data safely"""
-    result = {"symbol": symbol}
-
-    # --- 1. Fetch live NSE data ---
-    try:
-        js = fetch_live_from_nse(symbol)
-        price_info = js.get("priceInfo", {})
-        live = {
-            "open": price_info.get("open"),
-            "close": price_info.get("close"),
-            "lastPrice": price_info.get("lastPrice"),
-            "dayHigh": price_info.get("intraDayHighLow", {}).get("max"),
-            "dayLow": price_info.get("intraDayHighLow", {}).get("min"),
-            "52wHigh": price_info.get("weekHighLow", {}).get("max"),
-            "52wLow": price_info.get("weekHighLow", {}).get("min"),
-            "volume": price_info.get("totalTradedVolume") 
-                      or js.get("securityInfo", {}).get("tradedVolume")
-        }
-        result["live"] = live
-    except Exception as e:
-        result["live_error"] = str(e)  # Live failed, but keep going
-
-    # --- 2. Fetch historical YFinance data ---
-    try:
-        hist = fetch_historical_yfinance(symbol, days)
-        hist["Date"] = pd.to_datetime(hist["Date"])
-        chart = hist.tail(days).to_dict(orient="records")
-        print(chart)
-        for r in chart:
-            r["Date"] = r["Date"].isoformat()
-        result["chart"] = chart
-    except Exception as e:
-        result["chart_error"] = str(e)  # Chart failed
     return result
